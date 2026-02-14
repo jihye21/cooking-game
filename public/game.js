@@ -70,13 +70,23 @@ const COOKING_STATIONS = {
     emoji: '🔥',
     name: 'Oven',
   },
-  ingredients: {
-    x: 200,
+  pantry_tomato: {
+    x: 120,
     y: 350,
-    width: 80,
-    height: 80,
-    emoji: '📦',
-    name: 'Pantry',
+    width: 60,
+    height: 60,
+    emoji: '🍅',
+    name: 'Tomato Pantry',
+    itemType: 'tomato',
+  },
+  pantry_onion: {
+    x: 260,
+    y: 350,
+    width: 60,
+    height: 60,
+    emoji: '🧅',
+    name: 'Onion Pantry',
+    itemType: 'onion',
   },
   submission: {
     x: 950,
@@ -85,14 +95,6 @@ const COOKING_STATIONS = {
     height: 80,
     emoji: '📬',
     name: 'Submission',
-  },
-  recipes: {
-    x: 950,
-    y: 350,
-    width: 80,
-    height: 80,
-    emoji: '📖',
-    name: 'Recipes',
   },
 };
 
@@ -190,8 +192,9 @@ async function connectToServer(serverUrl) {
     });
 
     gameState.socket.on('connect', () => {
-      statusEl.textContent = '✅ 서버 연결됨';
-      statusEl.className = 'server-status connected';
+        statusEl.style.display = '';
+        statusEl.textContent = '✅ 서버 연결됨';
+        statusEl.className = 'server-status connected';
       
       if (gameState.isHost) {
         gameState.socket.emit('create_game', {
@@ -231,6 +234,29 @@ async function connectToServer(serverUrl) {
       gameState.items = data.items || gameState.items;
       gameState.orders = data.orders || gameState.orders;
       gameState.scores = data.scores || gameState.scores;
+
+      // 서버에서 받은 플레이어 데이터로 로컬 인벤토리 동기화 (특히 로컬 플레이어)
+      if (gameState.playerId && gameState.players && gameState.players[gameState.playerId]) {
+        const srvPlayer = gameState.players[gameState.playerId];
+        gameState.inventory = srvPlayer.inventory || gameState.inventory;
+        // readyDish 등 서버 상태를 로컬 ovenState로 매핑
+        if (srvPlayer.cooking && !gameState.ovenState) {
+          gameState.ovenState = {
+            recipeId: srvPlayer.cooking.recipeId,
+            name: srvPlayer.cooking.name,
+            emoji: srvPlayer.cooking.emoji,
+            cookTime: srvPlayer.cooking.finishTime ? Math.max(0, (srvPlayer.cooking.finishTime - Date.now())/1000) : srvPlayer.cooking.cookTime,
+          };
+          gameState.ovenFinishTime = srvPlayer.cooking.finishTime || 0;
+        }
+        if (srvPlayer.readyDish) {
+          gameState.ovenState = {
+            recipeId: srvPlayer.readyDish,
+            name: gameState.ovenState?.name || (RECIPES[srvPlayer.readyDish]?.name || ''),
+            emoji: RECIPES[srvPlayer.readyDish]?.emoji || '🍽️',
+          };
+        }
+      }
     });
 
     gameState.socket.on('score_update', (data) => {
@@ -242,7 +268,9 @@ async function connectToServer(serverUrl) {
 
     // 요리 시스템 이벤트
     gameState.socket.on('ingredient_received', (data) => {
-      gameState.inventory[data.itemType] = (gameState.inventory[data.itemType] || 0) + 1;
+        gameState.inventory[data.itemType] = (gameState.inventory[data.itemType] || 0) + 1;
+        // 들고있는 아이템으로 표시
+        gameState.heldItem = data.itemType;
     });
 
     gameState.socket.on('cooking_finished', (data) => {
@@ -251,6 +279,12 @@ async function connectToServer(serverUrl) {
         // 요리 완료 시간 업데이트
         gameState.ovenFinishTime = Date.now();
       }
+    });
+
+    gameState.socket.on('cooking_failed', (data) => {
+      alert(`❌ 조리에 실패했습니다: ${data.reason || '알 수 없음'}`);
+      // 서버에서 실패 알림을 받으면 로컬 오븐 상태 초기화
+      gameState.ovenState = null;
     });
 
     gameState.socket.on('food_submitted', (data) => {
@@ -263,6 +297,7 @@ async function connectToServer(serverUrl) {
     });
 
     gameState.socket.on('disconnect', () => {
+      statusEl.style.display = '';
       statusEl.textContent = '❌ 서버 연결 끊김';
       statusEl.className = 'server-status disconnected';
     });
@@ -290,11 +325,17 @@ function startGameScreen() {
     angle: 0,
   };
 
+  // 서버에서 아이템이 없는 경우 로컬 더미 아이템 생성
+  if (!gameState.items || Object.keys(gameState.items).length === 0) {
+    gameState.items = generateLocalItems();
+  }
+
   gameState.gameStarted = true;
   gameState.gameEnded = false;
   gameState.timeRemaining = GAME_CONFIG.GAME_DURATION;
   gameState.inventory = { tomato: 0, onion: 0 }; // 인벤토리 초기화
   gameState.ovenState = null;
+  gameState.heldItem = null;
   
   startGameLoop();
 }
@@ -394,21 +435,23 @@ function render() {
 
   // UI 그리기
   drawUI();
+  drawHeldItemUI();
+  drawOrderIngredientsBottom();
 }
 
-// 그리드 그리기
+// 그리드 그리기 (중앙 파란선 제거)
 function drawGrid() {
   ctx.strokeStyle = '#ddd';
   ctx.lineWidth = 1;
 
-  for (let x = 0; x < canvas.width; x += GAME_CONFIG.TILE_SIZE) {
+  for (let x = GAME_CONFIG.TILE_SIZE; x < canvas.width; x += GAME_CONFIG.TILE_SIZE) {
     ctx.beginPath();
     ctx.moveTo(x, 0);
     ctx.lineTo(x, canvas.height);
     ctx.stroke();
   }
 
-  for (let y = 0; y < canvas.height; y += GAME_CONFIG.TILE_SIZE) {
+  for (let y = GAME_CONFIG.TILE_SIZE; y < canvas.height; y += GAME_CONFIG.TILE_SIZE) {
     ctx.beginPath();
     ctx.moveTo(0, y);
     ctx.lineTo(canvas.width, y);
@@ -430,16 +473,20 @@ function drawCookingStations() {
     ctx.lineWidth = 3;
     ctx.strokeRect(station.x, station.y, station.width, station.height);
     
-    // 이모지 그리기
+    // 이모지 그리기 (캔버스에 정상 렌더링)
+    ctx.save();
     ctx.font = '48px Arial';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
+    ctx.fillStyle = '#333';
     ctx.fillText(station.emoji, station.x + station.width / 2, station.y + station.height / 2);
+    ctx.restore();
     
     // 이름 그리기
-    ctx.font = 'bold 12px Arial';
-    ctx.fillStyle = '#333';
-    ctx.fillText(station.name, station.x + station.width / 2, station.y + station.height + 15);
+    ctx.font = 'bold 11px Arial';
+    ctx.fillStyle = '#666';
+    ctx.textAlign = 'center';
+    ctx.fillText(station.name, station.x + station.width / 2, station.y + station.height + 12);
   }
 
   // 오븐 상태 표시
@@ -477,6 +524,23 @@ function drawItems() {
   }
 }
 
+// 로컬(서버 미연결)일 때 보여줄 임시 아이템 생성
+function generateLocalItems() {
+  const items = {};
+  const itemTypes = ['tomato', 'onion', 'plate'];
+  for (let i = 0; i < 8; i++) {
+    const id = `local_item_${i}_${Math.floor(Math.random() * 100000)}`;
+    items[id] = {
+      id,
+      type: itemTypes[Math.floor(Math.random() * itemTypes.length)],
+      x: Math.random() * (canvas.width - 60) + 30,
+      y: Math.random() * (canvas.height - 120) + 60,
+      pickedBy: null,
+    };
+  }
+  return items;
+}
+
 // 플레이어 그리기
 function drawPlayers() {
   // 로컬 플레이어
@@ -486,6 +550,7 @@ function drawPlayers() {
 
   // 다른 플레이어
   for (const playerId in gameState.players) {
+    if (playerId === gameState.playerId) continue; // 로컬 플레이어는 이미 그렸음
     const player = gameState.players[playerId];
     drawPlayer(player, false);
   }
@@ -547,6 +612,7 @@ function drawUI() {
   ctx.font = 'bold 14px Arial';
   const orderText = gameState.orders.length > 0 ? `📋 주문: ${gameState.orders[0]?.name || 'N/A'}` : '📋 주문 대기 중...';
   ctx.fillText(orderText, 10, 35);
+  // (하단에 주문 재료가 표시되므로 상단에는 간단히 주문명만 노출)
 
   // 인벤토리 표시
   ctx.fillStyle = '#333';
@@ -573,6 +639,38 @@ function drawUI() {
     ctx.fillStyle = '#ff6b6b';
     ctx.font = 'bold 12px Arial';
     ctx.fillText(`🍳 요리 중: ${gameState.ovenState.name}`, 10, invY + 10);
+  }
+}
+
+// 하단에 주문 재료 표시
+function drawOrderIngredientsBottom() {
+  if (!gameState.orders || gameState.orders.length === 0) return;
+  const currentOrder = gameState.orders[0];
+  const recipe = RECIPES[currentOrder.recipeId];
+  if (!recipe) return;
+
+  const padding = 10;
+  const boxHeight = 20 + Object.keys(recipe.ingredients).length * 18 + padding * 2;
+  const boxWidth = 260;
+  const x = 10;
+  const y = canvas.height - boxHeight - 10;
+
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillRect(x, y, boxWidth, boxHeight);
+  ctx.strokeStyle = '#667eea';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, boxWidth, boxHeight);
+
+  ctx.fillStyle = '#333';
+  ctx.font = 'bold 14px Arial';
+  ctx.fillText(`📋 주문: ${currentOrder.name}`, x + padding, y + 18);
+
+  ctx.font = '12px Arial';
+  let ingY = y + 36;
+  for (const [item, count] of Object.entries(recipe.ingredients)) {
+    const em = item === 'tomato' ? '🍅' : item === 'onion' ? '🧅' : '📦';
+    ctx.fillText(`${em} ${item} x${count} (내: ${gameState.inventory[item] || 0})`, x + padding, ingY);
+    ingY += 18;
   }
 }
 
@@ -635,7 +733,9 @@ function handleInteract() {
     const distance = Math.sqrt(dx * dx + dy * dy);
 
     if (distance < GAME_CONFIG.INTERACT_RANGE) {
+      // 아이템을 집고 들고있는 상태로 유지
       gameState.socket.emit('interact_item', { itemId });
+      gameState.heldItem = item.type;
       break;
     }
   }
@@ -646,9 +746,13 @@ function handleStationInteract(stationType) {
   if (!gameState.socket) return;
 
   switch (stationType) {
-    case 'ingredients':
-      // 재료 획득
-      gameState.socket.emit('get_ingredient');
+    case 'pantry_tomato':
+      gameState.socket.emit('get_ingredient', { type: 'tomato' });
+      gameState.heldItem = 'tomato';
+      break;
+    case 'pantry_onion':
+      gameState.socket.emit('get_ingredient', { type: 'onion' });
+      gameState.heldItem = 'onion';
       break;
     case 'oven':
       // 요리 시작
@@ -656,7 +760,7 @@ function handleStationInteract(stationType) {
       break;
     case 'recipes':
       // 레시피 확인
-      showRecipeMenu();
+      // 레시피 박스는 제거했으므로 무시
       break;
     case 'submission':
       // 음식 제출
@@ -724,6 +828,16 @@ function showSubmissionMenu() {
   }
 }
 
+// 표시: 들고있는 아이템 UI
+function drawHeldItemUI() {
+  if (!gameState.heldItem) return;
+  const itemEmojis = { tomato: '🍅', onion: '🧅' };
+  ctx.fillStyle = '#333';
+  ctx.font = 'bold 16px Arial';
+  ctx.textAlign = 'right';
+  ctx.fillText(`들고 있음: ${itemEmojis[gameState.heldItem] || '📦'}`, canvas.width - 10, 10 + 16);
+}
+
 // 요리 가능 여부 확인
 function canCook(recipe) {
   for (const [item, count] of Object.entries(recipe.ingredients)) {
@@ -752,10 +866,7 @@ function startCooking(recipeId, recipe) {
     ingredients: recipe.ingredients,
   });
 
-  // 인벤토리에서 재료 제거 (로컬)
-  for (const [item, count] of Object.entries(recipe.ingredients)) {
-    gameState.inventory[item] = (gameState.inventory[item] || 0) - count;
-  }
+  // 서버가 인벤토리를 관리하므로 로컬에서 재료를 직접 차감하지 않습니다.
 }
 
 // 게임 종료
@@ -795,7 +906,9 @@ function leaveGame() {
 function backToLobby() {
   document.getElementById('nickname').value = '';
   document.getElementById('gameCode').value = '';
-  document.getElementById('serverStatus').textContent = '';
+  const statusEl = document.getElementById('serverStatus');
+  statusEl.textContent = '';
+  statusEl.style.display = 'none';
   showScreen('lobby');
 }
 

@@ -41,13 +41,7 @@ class Game {
         inventory: { tomato: 0, onion: 0 },
       },
     };
-    this.items = this.generateItems();
-    this.orders = this.generateOrders();
-    this.startTime = Date.now();
-    this.duration = 180; // 3분
-    this.gameStarted = true;
-    
-    // 요리 시스템
+    // 요리 시스템 정의 (orders 생성 전에 설정)
     this.recipes = {
       tomato_soup: {
         name: '토마토 수프',
@@ -71,6 +65,12 @@ class Game {
         points: 60,
       },
     };
+
+    this.items = this.generateItems();
+    this.orders = this.generateOrders();
+    this.startTime = Date.now();
+    this.duration = 180; // 3분
+    this.gameStarted = true;
     this.ovenState = null;
     this.ovenFinishTime = 0;
   }
@@ -94,13 +94,20 @@ class Game {
   }
 
   generateOrders() {
-    const recipeKeys = Object.keys(this.recipes);
+    const recipes = this.recipes || {
+      tomato_soup: { name: '토마토 수프', emoji: '🍲', ingredients: { tomato: 2, onion: 1 }, cookTime: 5, points: 50 },
+      salad: { name: '샐러드', emoji: '🥗', ingredients: { tomato: 1, onion: 1 }, cookTime: 3, points: 40 },
+      onion_soup: { name: '양파 수프', emoji: '🍜', ingredients: { onion: 3 }, cookTime: 7, points: 60 },
+    };
+
+    const recipeKeys = Object.keys(recipes);
+    if (recipeKeys.length === 0) return [];
+
     const orders = [];
-    
     for (let i = 0; i < 5; i++) {
       const recipeKey = recipeKeys[Math.floor(Math.random() * recipeKeys.length)];
-      const recipe = this.recipes[recipeKey];
-      
+      const recipe = recipes[recipeKey];
+
       orders.push({
         id: `order_${Date.now()}_${i}`,
         name: recipe.name,
@@ -246,10 +253,14 @@ io.on('connection', (socket) => {
     const player = game.players[socket.id];
     if (item.pickedBy === null) {
       item.pickedBy = socket.id;
-      player.inventory.push(data.itemId);
-
-      // 음식 완성 시 점수 추가
-      if (item.type === 'cooked') {
+      // 플레이어 인벤토리 객체로 처리
+      if (!player.inventory) player.inventory = { tomato: 0, onion: 0 };
+      if (item.type === 'tomato' || item.type === 'onion') {
+        player.inventory[item.type] = (player.inventory[item.type] || 0) + 1;
+        // 클라이언트에 재료 수신 알림
+        socket.emit('ingredient_received', { itemType: item.type });
+      } else if (item.type === 'cooked') {
+        // 익힌 음식은 즉시 점수로 변환
         game.addScore(socket.id, 10);
         socket.emit('score_update', {
           playerId: socket.id,
@@ -269,6 +280,131 @@ io.on('connection', (socket) => {
       players: game.players,
       items: game.items,
     });
+  });
+
+  // 재료 획득 (판넬에서 E로 재료 얻기)
+  socket.on('get_ingredient', (data) => {
+    const playerInfo = players.get(socket.id);
+    if (!playerInfo) return;
+
+    const game = games.get(playerInfo.gameCode);
+    if (!game) return;
+
+    const player = game.players[socket.id];
+    if (!player.inventory) player.inventory = { tomato: 0, onion: 0 };
+
+    // 클라이언트가 특정 타입을 요청하면 그 타입을 주고, 아니면 랜덤
+    const types = ['tomato', 'onion'];
+    let pick = types[Math.floor(Math.random() * types.length)];
+    if (data && data.type && types.includes(data.type)) pick = data.type;
+    player.inventory[pick] = (player.inventory[pick] || 0) + 1;
+
+    socket.emit('ingredient_received', { itemType: pick });
+
+    io.to(playerInfo.gameCode).emit('game_state_update', {
+      players: game.players,
+      items: game.items,
+    });
+  });
+
+  // 조리 시작
+  socket.on('start_cooking', (data) => {
+    const playerInfo = players.get(socket.id);
+    if (!playerInfo) return;
+
+    const game = games.get(playerInfo.gameCode);
+    if (!game) return;
+
+    const { recipeId } = data;
+    const recipe = game.recipes[recipeId];
+    if (!recipe) return;
+
+    const player = game.players[socket.id];
+    if (!player.inventory) player.inventory = { tomato: 0, onion: 0 };
+
+    // 재료 부족 검사
+    for (const [item, count] of Object.entries(recipe.ingredients)) {
+      if ((player.inventory[item] || 0) < count) {
+        socket.emit('cooking_failed', { reason: '재료 부족' });
+        return;
+      }
+    }
+
+    // 재료 차감
+    for (const [item, count] of Object.entries(recipe.ingredients)) {
+      player.inventory[item] = (player.inventory[item] || 0) - count;
+    }
+
+    // 조리 상태 설정 (플레이어별)
+    player.cooking = {
+      recipeId,
+      name: recipe.name,
+      emoji: recipe.emoji,
+      finishTime: Date.now() + recipe.cookTime * 1000,
+      points: recipe.points,
+    };
+
+    io.to(playerInfo.gameCode).emit('game_state_update', {
+      players: game.players,
+      items: game.items,
+    });
+
+    // 조리 완료 처리
+    setTimeout(() => {
+      // 조리 완료 시 플레이어의 readyDish 설정
+      if (game.players[socket.id] && game.players[socket.id].cooking && game.players[socket.id].cooking.recipeId === recipeId) {
+        game.players[socket.id].readyDish = recipeId;
+        game.players[socket.id].cooking = null;
+        socket.emit('cooking_finished', { recipeId });
+
+        io.to(playerInfo.gameCode).emit('game_state_update', {
+          players: game.players,
+          items: game.items,
+        });
+      }
+    }, recipe.cookTime * 1000);
+  });
+
+  // 음식 제출
+  socket.on('submit_food', (data) => {
+    const playerInfo = players.get(socket.id);
+    if (!playerInfo) return;
+
+    const game = games.get(playerInfo.gameCode);
+    if (!game) return;
+
+    const player = game.players[socket.id];
+    const recipeId = data.recipeId;
+
+    // 준비된 음식 확인
+    if (!player.readyDish || player.readyDish !== recipeId) {
+      socket.emit('food_submitted', { success: false });
+      return;
+    }
+
+    const currentOrder = game.orders.find(o => !o.completed);
+    if (!currentOrder) {
+      socket.emit('food_submitted', { success: false });
+      return;
+    }
+
+    if (currentOrder.recipeId === recipeId) {
+      // 주문 완료
+      currentOrder.completed = true;
+      player.readyDish = null;
+      game.addScore(socket.id, game.recipes[recipeId].points);
+
+      socket.emit('food_submitted', { success: true, points: game.recipes[recipeId].points });
+      socket.emit('score_update', { playerId: socket.id, score: player.score });
+
+      io.to(playerInfo.gameCode).emit('game_state_update', {
+        players: game.players,
+        items: game.items,
+        orders: game.orders.filter(o => !o.completed),
+      });
+    } else {
+      socket.emit('food_submitted', { success: false });
+    }
   });
 
   socket.on('leave_game', () => {
