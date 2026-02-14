@@ -11,7 +11,7 @@
     <div class="lobby-container">
       <h1>🍳 요리 게임 멀티플레이</h1>
       <div class="server-input">
-        <input type="text" id="serverUrl" placeholder="서버 URL (예: http://localhost:3000)" value="http://localhost:3000">
+        <input type="text" id="serverUrl" placeholder="서버 URL (기본값: 현재 호스트의 3000 포트)">
       </div>
       <div class="nickname-input">
         <input type="text" id="nickname" placeholder="닉네임을 입력하세요" maxlength="20">
@@ -68,7 +68,7 @@
     </div>
   </div>
 
-  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script src="/socket.io/socket.io.js"></script>
   <script src="game.js"></script>
 </body>
 </html>

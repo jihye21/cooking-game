@@ -11,7 +11,11 @@ const io = socketIo(server, {
   cors: {
     origin: '*',
     methods: ['GET', 'POST'],
+    credentials: false,
+    transports: ['websocket', 'polling'],
   },
+  pingInterval: 25000,
+  pingTimeout: 20000,
 });
 
 app.use(cors());
@@ -34,7 +38,7 @@ class Game {
         y: Math.random() * 600,
         angle: 0,
         score: 0,
-        inventory: [],
+        inventory: { tomato: 0, onion: 0 },
       },
     };
     this.items = this.generateItems();
@@ -42,6 +46,33 @@ class Game {
     this.startTime = Date.now();
     this.duration = 180; // 3분
     this.gameStarted = true;
+    
+    // 요리 시스템
+    this.recipes = {
+      tomato_soup: {
+        name: '토마토 수프',
+        emoji: '🍲',
+        ingredients: { tomato: 2, onion: 1 },
+        cookTime: 5,
+        points: 50,
+      },
+      salad: {
+        name: '샐러드',
+        emoji: '🥗',
+        ingredients: { tomato: 1, onion: 1 },
+        cookTime: 3,
+        points: 40,
+      },
+      onion_soup: {
+        name: '양파 수프',
+        emoji: '🍜',
+        ingredients: { onion: 3 },
+        cookTime: 7,
+        points: 60,
+      },
+    };
+    this.ovenState = null;
+    this.ovenFinishTime = 0;
   }
 
   generateItems() {
@@ -63,17 +94,18 @@ class Game {
   }
 
   generateOrders() {
-    const orderTypes = [
-      { name: '스프', type: 'soup' },
-      { name: '샐러드', type: 'salad' },
-      { name: '버거', type: 'burger' },
-    ];
-
+    const recipeKeys = Object.keys(this.recipes);
     const orders = [];
+    
     for (let i = 0; i < 5; i++) {
+      const recipeKey = recipeKeys[Math.floor(Math.random() * recipeKeys.length)];
+      const recipe = this.recipes[recipeKey];
+      
       orders.push({
         id: `order_${Date.now()}_${i}`,
-        ...orderTypes[Math.floor(Math.random() * orderTypes.length)],
+        name: recipe.name,
+        emoji: recipe.emoji,
+        recipeId: recipeKey,
         completed: false,
       });
     }
@@ -89,7 +121,7 @@ class Game {
       y: Math.random() * 600,
       angle: 0,
       score: 0,
-      inventory: [],
+      inventory: { tomato: 0, onion: 0 },
     };
   }
 
@@ -285,7 +317,7 @@ io.on('connection', (socket) => {
 
 // 서버 시작
 const PORT = process.env.PORT || 3000;
-server.listen(PORT, () => {
+server.listen(PORT, '::', { ipv6Only: false }, () => {
   console.log(`🍳 요리 게임 서버 실행: http://localhost:${PORT}`);
   console.log(`환경: ${process.env.NODE_ENV || 'development'}`);
 });
