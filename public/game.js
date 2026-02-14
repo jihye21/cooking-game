@@ -52,8 +52,10 @@ const gameState = {
   keys: {
     w: false, a: false, s: false, d: false,
   },
-  inventory: {}, // 플레이어 인벤토리
+  heldItem: null, // 손에 들고 있는 아이템 (tomato, onion, plate)
   ovenState: null, // 현재 요리 중인 음식 정보
+  cookedFood: null, // 완료된 요리 (접시에 담기 전)
+  cookedFoodTimeout: 0, // 완료된 요리 타임아웃 시간
   ovenFinishTime: 0, // 요리 완료 시간
 };
 
@@ -88,6 +90,14 @@ const COOKING_STATIONS = {
     name: 'Onion Pantry',
     itemType: 'onion',
   },
+  garbage: {
+    x: 950,
+    y: 250,
+    width: 60,
+    height: 60,
+    emoji: '🗑️',
+    name: 'Garbage',
+  },
   submission: {
     x: 950,
     y: 100,
@@ -103,27 +113,30 @@ function init() {
   canvas = document.getElementById('gameCanvas');
   ctx = canvas.getContext('2d');
   
-  // 반응형 캔버스 크기 조정
-  function resizeCanvas() {
-    const container = canvas.parentElement;
-    const width = container.clientWidth;
-    const height = Math.min(600, window.innerHeight - 250);
-    
-    canvas.width = width;
-    canvas.height = height;
-  }
-  
-  resizeCanvas();
-  window.addEventListener('resize', resizeCanvas);
-
   setupEventListeners();
   showScreen('lobby');
+}
+
+// 캔버스 크기 조정 함수
+function resizeCanvas() {
+  if (!canvas || !canvas.parentElement) return;
+  
+  const container = canvas.parentElement;
+  const width = Math.max(container.clientWidth || GAME_CONFIG.CANVAS_WIDTH, GAME_CONFIG.CANVAS_WIDTH);
+  const height = Math.min(600, window.innerHeight - 250);
+  
+  canvas.width = width;
+  canvas.height = height;
 }
 
 // 화면 전환
 function showScreen(screenName) {
   document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
-  document.getElementById(screenName).classList.add('active');
+  const screen = document.getElementById(screenName);
+  screen.classList.add('active');
+  
+  // 브라우저 리플로우 강제 트리거
+  void screen.offsetHeight;
 }
 
 // 이벤트 리스너 설정
@@ -313,6 +326,16 @@ async function connectToServer(serverUrl) {
 function startGameScreen() {
   showScreen('game');
   document.getElementById('playerName').textContent = gameState.nickname;
+  
+  // 게임 화면이 활성화된 후 캔버스 크기 조정
+  resizeCanvas();
+  window.addEventListener('resize', resizeCanvas);
+  
+  // 브라우저 리페인트 강제 트리거
+  if (canvas) {
+    canvas.style.display = 'block';
+  }
+  
   document.getElementById('playerScore').textContent = `점수: 0`;
   updatePlayerCount();
   
@@ -333,9 +356,10 @@ function startGameScreen() {
   gameState.gameStarted = true;
   gameState.gameEnded = false;
   gameState.timeRemaining = GAME_CONFIG.GAME_DURATION;
-  gameState.inventory = { tomato: 0, onion: 0 }; // 인벤토리 초기화
+  gameState.heldItem = null; // 손에 든 아이템 초기화
   gameState.ovenState = null;
-  gameState.heldItem = null;
+  gameState.cookedFood = null;
+  gameState.cookedFoodTimeout = 0;
   
   startGameLoop();
 }
@@ -403,6 +427,26 @@ function updateLocalPlayer() {
   // 위치 업데이트
   gameState.localPlayer.x += vx;
   gameState.localPlayer.y += vy;
+
+  // 요리 스테이션과의 충돌 감지 (오븐, 펜트리, 쓰레기통)
+  const collisionStations = ['oven', 'pantry_tomato', 'pantry_onion', 'garbage'];
+  for (const stationType of collisionStations) {
+    const station = COOKING_STATIONS[stationType];
+    if (station) {
+      const dx = gameState.localPlayer.x - (station.x + station.width / 2);
+      const dy = gameState.localPlayer.y - (station.y + station.height / 2);
+      const playerRadius = GAME_CONFIG.PLAYER_SIZE;
+      const stationRadius = Math.max(station.width, station.height) / 2;
+      const distance = Math.sqrt(dx * dx + dy * dy);
+      
+      if (distance < playerRadius + stationRadius) {
+        // 충돌 발생 - 이전 위치로 되돌리기
+        gameState.localPlayer.x -= vx;
+        gameState.localPlayer.y -= vy;
+        break;
+      }
+    }
+  }
 
   // 경계 처리
   gameState.localPlayer.x = Math.max(GAME_CONFIG.PLAYER_SIZE, 
@@ -652,8 +696,8 @@ function drawOrderIngredientsBottom() {
   const padding = 10;
   const boxHeight = 20 + Object.keys(recipe.ingredients).length * 18 + padding * 2;
   const boxWidth = 260;
-  const x = 10;
-  const y = canvas.height - boxHeight - 10;
+  const x = 15; // 캔버스 왼쪽에서 고정
+  const y = canvas.height - boxHeight - 15; // 캔버스 아래에서 고정
 
   ctx.fillStyle = 'rgba(255,255,255,0.9)';
   ctx.fillRect(x, y, boxWidth, boxHeight);
@@ -669,8 +713,61 @@ function drawOrderIngredientsBottom() {
   let ingY = y + 36;
   for (const [item, count] of Object.entries(recipe.ingredients)) {
     const em = item === 'tomato' ? '🍅' : item === 'onion' ? '🧅' : '📦';
-    ctx.fillText(`${em} ${item} x${count} (내: ${gameState.inventory[item] || 0})`, x + padding, ingY);
+    ctx.fillText(`${em} ${item} x${count}`, x + padding, ingY);
     ingY += 18;
+  }
+  
+  // 완료된 요리 상태 표시
+  drawCookedFoodStatus();
+}
+
+// 완료된 요리 상태 표시 (게이지 바)
+function drawCookedFoodStatus() {
+  if (!gameState.cookedFood) return;
+  
+  const timeoutTime = gameState.cookedFoodTimeout;
+  const now = Date.now();
+  const timeLeft = Math.max(0, timeoutTime - now);
+  const totalTime = 30000; // 30초
+  const percentage = Math.max(0, timeLeft / totalTime);
+  
+  // UI 위치 (오른쪽 아래)
+  const boxWidth = 200;
+  const barHeight = 30;
+  const x = canvas.width - boxWidth - 15;
+  const y = canvas.height - barHeight - 15;
+  
+  // 배경 박스
+  ctx.fillStyle = 'rgba(255,255,255,0.9)';
+  ctx.fillRect(x, y, boxWidth, barHeight);
+  ctx.strokeStyle = '#ff6b6b';
+  ctx.lineWidth = 2;
+  ctx.strokeRect(x, y, boxWidth, barHeight);
+  
+  // 게이지 바
+  const barX = x + 5;
+  const barY = y + 5;
+  const barWidth = boxWidth - 10;
+  const barHeight2 = barHeight - 10;
+  
+  // 배경 게이지
+  ctx.fillStyle = '#f0f0f0';
+  ctx.fillRect(barX, barY, barWidth, barHeight2);
+  
+  // 진행 게이지
+  ctx.fillStyle = percentage > 0.3 ? '#27ae60' : percentage > 0.1 ? '#f39c12' : '#e74c3c';
+  ctx.fillRect(barX, barY, barWidth * percentage, barHeight2);
+  
+  // 텍스트
+  ctx.fillStyle = '#333';
+  ctx.font = 'bold 12px Arial';
+  ctx.textAlign = 'center';
+  ctx.fillText(`${gameState.cookedFood.emoji} ${Math.ceil(timeLeft / 1000)}s`, x + boxWidth / 2, y + 20);
+  
+  // 시간 만료 체크
+  if (timeLeft <= 0) {
+    gameState.cookedFood = null;
+    gameState.cookedFoodTimeout = 0;
   }
 }
 
@@ -747,20 +844,48 @@ function handleStationInteract(stationType) {
 
   switch (stationType) {
     case 'pantry_tomato':
-      gameState.socket.emit('get_ingredient', { type: 'tomato' });
-      gameState.heldItem = 'tomato';
+      // 이미 손에 아이템이 있으면 첫 번째로 아이템 집지 않기
+      if (gameState.heldItem) {
+        alert('손이 비어있어야 합니다.');
+      } else {
+        gameState.socket.emit('get_ingredient', { type: 'tomato' });
+        gameState.heldItem = 'tomato';
+      }
       break;
     case 'pantry_onion':
-      gameState.socket.emit('get_ingredient', { type: 'onion' });
-      gameState.heldItem = 'onion';
+      if (gameState.heldItem) {
+        alert('손이 비어있어야 합니다.');
+      } else {
+        gameState.socket.emit('get_ingredient', { type: 'onion' });
+        gameState.heldItem = 'onion';
+      }
+      break;
+    case 'garbage':
+      // 완료된 요리 버리기
+      if (gameState.cookedFood) {
+        gameState.cookedFood = null;
+        gameState.cookedFoodTimeout = 0;
+      } else if (gameState.heldItem) {
+        gameState.heldItem = null;
+      } else {
+        alert('버릴 것이 없습니다.');
+      }
       break;
     case 'oven':
-      // 요리 시작
-      showCookingMenu();
-      break;
-    case 'recipes':
-      // 레시피 확인
-      // 레시피 박스는 제거했으므로 무시
+      // 오븐이 비어있고, 손에 재료가 있으면 요리 시작
+      if (gameState.ovenState === null && gameState.heldItem === null) {
+        showCookingMenu();
+      } else if (gameState.ovenState !== null) {
+        // 요리가 완료되었으면 꺼내기
+        const timeLeft = Math.max(0, gameState.ovenFinishTime - Date.now());
+        if (timeLeft <= 0 && gameState.ovenState) {
+          gameState.cookedFood = gameState.ovenState;
+          gameState.ovenState = null;
+          gameState.cookedFoodTimeout = Date.now() + 30000; // 30초 타임아웃
+        }
+      } else {
+        alert('손이 비어있고 오븐이 비어있어야 합니다.');
+      }
       break;
     case 'submission':
       // 음식 제출
@@ -772,14 +897,8 @@ function handleStationInteract(stationType) {
 // 요리 메뉴 표시
 function showCookingMenu() {
   const recipes = Object.entries(RECIPES)
-    .filter(([_, recipe]) => canCook(recipe))
     .map(([id, recipe]) => `${recipe.emoji} ${recipe.name}`)
     .join('\n');
-
-  if (recipes.length === 0) {
-    alert('요리할 수 있는 레시피가 없습니다.\n필요한 재료를 모아주세요.');
-    return;
-  }
 
   const choice = prompt(`🔥 요리할 음식을 선택하세요:\n${recipes}\n(또는 Cancel로 취소)`);
   if (choice) {
@@ -811,31 +930,41 @@ function showSubmissionMenu() {
     return;
   }
 
-  const cooked = gameState.ovenState ? `${gameState.ovenState.emoji} ${gameState.ovenState.name}` : '없음';
   const currentOrder = gameState.orders[0];
-  const matches = currentOrder?.name === gameState.ovenState?.name;
-
-  let message = `📬 음식 제출\n\n현재 주문: ${currentOrder?.emoji} ${currentOrder?.name}\n요리한 음식: ${cooked}`;
   
-  if (matches && gameState.ovenState) {
-    message += '\n\n✅ 현재 요리가 주문과 일치합니다!';
-    if (confirm(message + '\n\n제출하시겠습니까?')) {
-      gameState.socket.emit('submit_food', { recipeId: gameState.ovenState.recipeId });
-      gameState.ovenState = null;
+  // 접시에 담긴 요리만 제출 가능
+  if (gameState.heldItem !== 'plate' || gameState.cookedFood === null) {
+    alert('접시에 요리를 담아서 제출해주세요.');
+    return;
+  }
+
+  const matches = currentOrder?.name === gameState.cookedFood?.name;
+
+  if (matches) {
+    if (confirm(`📬 주문: ${currentOrder?.emoji} ${currentOrder?.name}\n요리: ${gameState.cookedFood?.emoji} ${gameState.cookedFood?.name}\n\n제출하시겠습니까?`)) {
+      gameState.socket.emit('submit_food', { recipeId: gameState.cookedFood.recipeId });
+      gameState.cookedFood = null;
+      gameState.heldItem = null;
     }
   } else {
-    alert(message + '\n\n❌ 주문과 맞지 않습니다.');
+    alert(`❌ 주문과 맞지 않습니다.\n주문: ${currentOrder?.emoji} ${currentOrder?.name}\n요리: ${gameState.cookedFood?.emoji} ${gameState.cookedFood?.name}`);
   }
 }
 
 // 표시: 들고있는 아이템 UI
 function drawHeldItemUI() {
   if (!gameState.heldItem) return;
-  const itemEmojis = { tomato: '🍅', onion: '🧅' };
+  const itemEmojis = { tomato: '🍅', onion: '🧅', plate: '🍽️' };
   ctx.fillStyle = '#333';
   ctx.font = 'bold 16px Arial';
   ctx.textAlign = 'right';
   ctx.fillText(`들고 있음: ${itemEmojis[gameState.heldItem] || '📦'}`, canvas.width - 10, 10 + 16);
+  
+  // 접시에 요리가 담겨있으면 표시
+  if (gameState.heldItem === 'plate' && gameState.cookedFood) {
+    ctx.font = 'bold 14px Arial';
+    ctx.fillText(`${gameState.cookedFood.emoji} ${gameState.cookedFood.name}`, canvas.width - 10, 10 + 32);
+  }
 }
 
 // 요리 가능 여부 확인
