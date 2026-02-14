@@ -1,0 +1,24 @@
+{
+  "name": "cooking-game",
+  "version": "1.0.0",
+  "description": "Multiplayer Overcooked-style cooking game",
+  "main": "server/server.js",
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "nodemon server/server.js",
+    "build": "echo 'Frontend is static'",
+    "deploy:frontend": "echo 'Deploy to GitHub Pages manual'"
+  },
+  "keywords": ["game", "cooking", "multiplayer", "socket.io"],
+  "author": "",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.18.2",
+    "socket.io": "^4.6.1",
+    "cors": "^2.8.5",
+    "dotenv": "^16.0.3"
+  },
+  "devDependencies": {
+    "nodemon": "^2.0.22"
+  }
+}

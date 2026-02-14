@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Cooking Game - 요리 게임 멀티플레이</title>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div id="lobby" class="screen active">
+    <div class="lobby-container">
+      <h1>🍳 요리 게임 멀티플레이</h1>
+      <div class="server-input">
+        <input type="text" id="serverUrl" placeholder="서버 URL (예: http://localhost:3000)" value="http://localhost:3000">
+      </div>
+      <div class="nickname-input">
+        <input type="text" id="nickname" placeholder="닉네임을 입력하세요" maxlength="20">
+      </div>
+      <div class="game-code-input">
+        <input type="text" id="gameCode" placeholder="게임 코드 (없으면 자동 생성)">
+      </div>
+      <div class="button-group">
+        <button id="createBtn" class="btn btn-primary">새 게임 시작</button>
+        <button id="joinBtn" class="btn btn-secondary">게임 참여</button>
+      </div>
+      <div id="serverStatus" class="server-status"></div>
+    </div>
+  </div>
+
+  <div id="game" class="screen">
+    <div class="game-header">
+      <div class="player-info">
+        <span id="playerName">Player</span>
+        <span id="playerScore">점수: 0</span>
+      </div>
+      <div class="game-code-display">
+        게임 코드: <span id="displayGameCode">-</span>
+      </div>
+      <div class="players-count">
+        플레이어: <span id="playersCount">1/4</span>
+      </div>
+    </div>
+
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="game-info">
+      <div class="orders">
+        <h3>📋 주문</h3>
+        <div id="orderList" class="order-list"></div>
+      </div>
+      <div class="controls">
+        <h3>⌨️ 조작</h3>
+        <p>이동: <kbd>W</kbd> <kbd>A</kbd> <kbd>S</kbd> <kbd>D</kbd></p>
+        <p>상호작용: <kbd>E</kbd></p>
+        <p>나가기: <kbd>ESC</kbd></p>
+      </div>
+    </div>
+
+    <button id="leaveBtn" class="btn btn-danger">게임 나가기</button>
+  </div>
+
+  <div id="gameOver" class="screen">
+    <div class="game-over-container">
+      <h1>게임 종료</h1>
+      <div id="finalScore" class="final-score"></div>
+      <div id="gameOverMessage" class="game-over-message"></div>
+      <button id="backToLobbyBtn" class="btn btn-primary">로비로 돌아가기</button>
+    </div>
+  </div>
+
+  <script src="https://cdn.socket.io/4.5.4/socket.io.min.js"></script>
+  <script src="game.js"></script>
+</body>
+</html>

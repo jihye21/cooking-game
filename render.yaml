@@ -1,0 +1,15 @@
+# Render.com 배포 설정 (render.yaml)
+# Render에서 이 파일을 자동으로 인식하고 배포 설정을 적용합니다.
+
+services:
+  - type: web
+    name: cooking-game-api
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: PORT
+        value: 3000
